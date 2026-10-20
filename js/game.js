@@ -96,7 +96,9 @@ const Game = {
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.save)); } catch (e) { /* private mode: no saving */ }
   },
   resetSave() {
-    if (!confirm('Start a brand new game? You will lose your money and vehicles.')) return;
+    this.ask('Start a brand new game? You will lose your money and vehicles.', 'Start over', () => this.doReset(), () => this.showPause());
+  },
+  doReset() {
     this.save = this.newSave();
     this.save.seenHelp = true;
     this.store();
@@ -706,6 +708,15 @@ const Game = {
     Input.clear();
   },
 
+  // Yes / No question shown inside the game (pop-up dialogs don't work everywhere)
+  ask(question, yesLabel, onYes, onNo) {
+    const m = this.openMenu(`<h2>${question}</h2>
+      <button class="big danger" id="ask-yes">${yesLabel}</button>
+      <button class="big alt" id="ask-no">Cancel</button>`);
+    m.querySelector('#ask-yes').onclick = onYes;
+    m.querySelector('#ask-no').onclick = onNo;
+  },
+
   showHelp() {
     const m = this.openMenu(`
       <h2>🏙️ Mehek City Racer</h2>
@@ -833,12 +844,13 @@ const Game = {
       const i = +b.dataset.sell;
       const o = this.save.owned[i];
       const v = VEHICLES[o.id];
-      if (!confirm(`Sell your ${v.name} for ${money(this.sellValue(o))}?`)) return;
-      this.save.money += this.sellValue(o);
-      this.removeOwned(i);
-      Sound.coin();
-      this.toast(`Sold the ${v.name}!`);
-      this.openSell();
+      this.ask(`Sell your ${v.name} for ${money(this.sellValue(o))}?`, 'Sell it', () => {
+        this.save.money += this.sellValue(o);
+        this.removeOwned(i);
+        Sound.coin();
+        this.toast(`Sold the ${v.name}!`);
+        this.openSell();
+      }, () => this.openSell());
     }));
     this.drawThumbs(m);
   },
