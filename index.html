@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Mehek City Racer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div class="pill money" id="money">$0</div>
+    <div class="pill" id="vehicle">🚗</div>
+  </div>
+  <div id="topbtns">
+    <button id="btn-garage" title="Garage (G)">🏠</button>
+    <button id="btn-pad" title="Show / hide touch controller">🕹️</button>
+    <button id="btn-sound" title="Sound (M)">🔊</button>
+    <button id="btn-help" title="Help">❓</button>
+  </div>
+
+  <div id="prompt"></div>
+  <div id="toast"></div>
+
+  <!-- On-screen controller for phones and tablets -->
+  <div id="touch">
+    <div class="pad-left">
+      <button data-touch="left">◀</button>
+      <button data-touch="right">▶</button>
+    </div>
+    <div class="pad-mid">
+      <button data-touch="action" class="action">ACTION</button>
+    </div>
+    <div class="pad-right">
+      <button data-touch="brake" class="small">DRIFT</button>
+      <button data-touch="nitro" class="small nitro">NITRO</button>
+      <button data-touch="down" class="pedal brake">BRAKE</button>
+      <button data-touch="up" class="pedal gas">GAS</button>
+    </div>
+  </div>
+
+  <div id="menu"></div>
+
+  <script src="js/vehicles.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/city.js"></script>
+  <script src="js/tracks.js"></script>
+  <script src="js/dealer.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
