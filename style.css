@@ -47,11 +47,21 @@ body.show-touch #touch { display: block; }
   border-radius: 18px; touch-action: none;
 }
 #touch button.held { background: rgba(255, 202, 40, 0.75); color: #222; }
-.pad-left { position: fixed; left: 16px; bottom: 20px; display: flex; gap: 12px; }
-.pad-left button { width: 84px; height: 84px; font-size: 34px; }
-.pad-mid { position: fixed; left: 50%; bottom: 160px; transform: translateX(-50%); }
-.pad-mid .action { width: 120px; height: 48px; font-size: 16px; background: rgba(255, 202, 40, 0.55) !important; }
-.pad-right { position: fixed; right: 16px; bottom: 20px; display: grid; grid-template-columns: 84px 84px; gap: 10px; }
+#stick {
+  position: fixed; left: max(20px, env(safe-area-inset-left, 0px)); bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  width: 150px; height: 150px; border-radius: 50%; background: rgba(20, 24, 30, 0.35);
+  border: 3px solid rgba(255, 255, 255, 0.45); touch-action: none; display: flex; align-items: center; justify-content: center;
+}
+#knob { width: 64px; height: 64px; border-radius: 50%; background: rgba(255, 255, 255, 0.75); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); pointer-events: none; }
+.pad-mid { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); display: flex; gap: 10px; }
+.pad-mid button { width: 110px; height: 50px; font-size: 15px; }
+.pad-mid .action { background: rgba(255, 202, 40, 0.55) !important; }
+.pad-mid .exit .in { display: none; }
+body.on-foot .pad-mid .exit .in { display: inline; }
+body.on-foot .pad-mid .exit .out { display: none; }
+.pad-zoom { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; }
+.pad-zoom button { width: 54px; height: 44px; font-size: 14px; }
+.pad-right { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(20px, env(safe-area-inset-bottom, 0px)); display: grid; grid-template-columns: 84px 84px; gap: 10px; }
 .pad-right .small { height: 48px; font-size: 14px; }
 .pad-right .nitro { background: rgba(41, 182, 246, 0.5); }
 .pad-right .pedal { height: 84px; font-size: 16px; }
@@ -129,6 +139,80 @@ button.buy:disabled { background: #bdbdbd; cursor: default; }
   .pill.money { font-size: 15px; }
   #hud { max-width: calc(100vw - 200px); }
   .track .tmap { display: none; }
-  .pad-left button, .pad-right .pedal { width: 70px; height: 70px; }
+  .pad-right .pedal { width: 70px; height: 70px; }
   .pad-right { grid-template-columns: 70px 70px; }
+  #stick { width: 120px; height: 120px; }
+  #knob { width: 52px; height: 52px; }
+  .pad-mid { bottom: 190px; }
+}
+
+/* ---------- Racing City additions ---------- */
+#hud { top: max(12px, env(safe-area-inset-top, 0px)); left: max(12px, env(safe-area-inset-left, 0px)); }
+#topbtns { top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); }
+#topbtns button[hidden] { display: none; }
+button.pill { border: 0; color: #fff; font-family: inherit; cursor: pointer; }
+#online { color: #80deea; }
+
+#tutorial, #mission {
+  position: fixed; left: 50%; transform: translateX(-50%); background: rgba(20, 24, 30, 0.9); border-radius: 14px;
+  padding: 10px 16px; display: none; max-width: min(560px, 92vw); text-align: center; line-height: 1.4;
+}
+#tutorial { top: 118px; border: 2px solid #76ff03; padding-right: 70px; text-align: left; }
+#tutorial.show, #mission.show { display: block; }
+#tutorial .tstep { color: #76ff03; font-weight: 800; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+#tutorial button { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); border: 0; border-radius: 8px; padding: 6px 10px; background: #455a64; color: #fff; font-weight: 700; }
+#mission { top: 64px; border: 2px solid #00e5ff; display: none; }
+#mission.show { display: flex; flex-direction: column; gap: 2px; }
+#mission b { color: #00e5ff; }
+#mission .row { display: flex; gap: 14px; justify-content: center; font-size: 14px; }
+#mission em { font-style: normal; font-variant-numeric: tabular-nums; }
+#mission em.hurry { color: #ff5252; font-weight: 800; }
+#prompt { top: auto; bottom: 120px; }
+body.show-touch #prompt { bottom: 200px; }
+
+.talk { display: flex; gap: 14px; align-items: center; }
+.talk canvas, .look canvas { width: 96px; height: 96px; border-radius: 50%; background: #e0f2f1; flex-shrink: 0; }
+.talk p { font-size: 17px; }
+.look { display: flex; gap: 14px; align-items: flex-start; }
+.look p { margin: 6px 0 4px; font-weight: 700; }
+.look .paint { width: 30px; height: 30px; }
+.namerow { display: flex; gap: 8px; margin-top: 8px; }
+.namerow input { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 2px solid #cfd8dc; }
+.players { list-style: none; padding: 0; display: grid; gap: 6px; }
+.players li { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 10px; padding: 8px 12px; }
+.players li i { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+.players li span { margin-left: auto; color: #607d8b; font-size: 13px; }
+.emotes { display: flex; gap: 8px; flex-wrap: wrap; }
+.emotes button { font-size: 28px; width: 56px; height: 56px; border-radius: 14px; border: 0; background: #eceff1; }
+.rbtns { display: flex; flex-direction: column; gap: 6px; }
+button.buy.online { background: #00897b; }
+button.buy.online:disabled { background: #bdbdbd; }
+
+#rotate { display: none; }
+@media (orientation: portrait) and (pointer: coarse) {
+  body:not(.allow-portrait) #rotate {
+    position: fixed; inset: 0; z-index: 50; background: #102027; color: #fff; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 24px;
+  }
+  #rotate .phone { font-size: 80px; animation: turn 2s ease-in-out infinite; }
+  #rotate button { margin-top: 18px; border: 0; border-radius: 12px; padding: 12px 18px; background: #37474f; color: #fff; font-size: 16px; }
+}
+@keyframes turn { 0%, 30% { transform: rotate(0deg); } 60%, 100% { transform: rotate(-90deg); } }
+@media (prefers-reduced-motion: reduce) { #rotate .phone { animation: none; } }
+
+/* landscape phones: keep the HUD compact so the road stays visible */
+@media (max-height: 500px) {
+  .pill { font-size: 13px; padding: 5px 10px; }
+  .pill.money { font-size: 15px; }
+  #topbtns button { width: 36px; height: 36px; font-size: 17px; }
+  #stick { width: 130px; height: 130px; }
+  .pad-right { grid-template-columns: 76px 76px; gap: 8px; }
+  .pad-right .pedal { height: 76px; }
+  .pad-right .small { height: 40px; }
+  .pad-mid button { width: 92px; height: 42px; font-size: 13px; }
+  .pad-zoom { top: auto; transform: none; right: auto; left: max(165px, calc(env(safe-area-inset-left, 0px) + 150px)); bottom: max(20px, env(safe-area-inset-bottom, 0px)); flex-direction: row; }
+  .pad-mid { left: auto; right: max(190px, calc(env(safe-area-inset-right, 0px) + 175px)); transform: none; }
+  #mission { top: 52px; font-size: 13px; }
+  #tutorial { top: auto; bottom: 70px; font-size: 13px; max-width: 46vw; }
+  #prompt { bottom: 70px !important; font-size: 13px; }
 }

@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Mehek City Racer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Racing City</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,25 +12,33 @@
   <div id="hud">
     <div class="pill money" id="money">$0</div>
     <div class="pill" id="vehicle">🚗</div>
+    <div class="pill" id="clock">☀️ 09:00</div>
+    <button class="pill" id="online">👥 Solo</button>
   </div>
   <div id="topbtns">
-    <button id="btn-garage" title="Garage (G)">🏠</button>
-    <button id="btn-pad" title="Show / hide touch controller">🕹️</button>
-    <button id="btn-sound" title="Sound (M)">🔊</button>
-    <button id="btn-help" title="Help">❓</button>
+    <button id="btn-garage" title="Garage (G)" aria-label="Garage">🏠</button>
+    <button id="btn-settings" title="Settings" aria-label="Settings">⚙️</button>
+    <button id="btn-pad" title="Show / hide touch controller" aria-label="Touch controller">🕹️</button>
+    <button id="btn-full" title="Full screen" aria-label="Full screen">⛶</button>
+    <button id="btn-sound" title="Sound (M)" aria-label="Sound">🔊</button>
+    <button id="btn-help" title="Help" aria-label="Help">❓</button>
   </div>
 
+  <div id="tutorial"></div>
+  <div id="mission"></div>
   <div id="prompt"></div>
   <div id="toast"></div>
 
-  <!-- On-screen controller for phones and tablets -->
+  <!-- On-screen controller for phones and tablets (best with the phone sideways) -->
   <div id="touch">
-    <div class="pad-left">
-      <button data-touch="left">◀</button>
-      <button data-touch="right">▶</button>
-    </div>
+    <div id="stick"><div id="knob"></div></div>
     <div class="pad-mid">
+      <button data-touch="exit" class="exit"><span class="out">🚶 OUT</span><span class="in">🚗 IN</span></button>
       <button data-touch="action" class="action">ACTION</button>
+    </div>
+    <div class="pad-zoom">
+      <button data-touch="zoomin" aria-label="Zoom in">🔍+</button>
+      <button data-touch="zoomout" aria-label="Zoom out">🔍−</button>
     </div>
     <div class="pad-right">
       <button data-touch="brake" class="small">DRIFT</button>
@@ -40,13 +48,24 @@
     </div>
   </div>
 
+  <div id="rotate">
+    <div class="phone">📱</div>
+    <h2>Turn your phone sideways</h2>
+    <p>Racing City plays best in landscape.</p>
+    <button id="rotate-ok">Play in portrait anyway</button>
+  </div>
+
   <div id="menu"></div>
 
   <script src="js/vehicles.js"></script>
   <script src="js/input.js"></script>
   <script src="js/city.js"></script>
+  <script src="js/fx.js"></script>
+  <script src="js/people.js"></script>
   <script src="js/tracks.js"></script>
   <script src="js/dealer.js"></script>
+  <script src="js/missions.js"></script>
+  <script src="js/multiplayer.js"></script>
   <script src="js/game.js"></script>
 </body>
 </html>

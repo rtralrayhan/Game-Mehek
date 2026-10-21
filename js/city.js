@@ -105,6 +105,63 @@ const City = {
     this.makeOutskirts(rnd);
     this.makeTraffic(rnd);
     this.makeMinimap();
+    this.makePatterns();
+    // street lamps (for night lighting) and trees, found once
+    this.lampList = [];
+    this.treeList = [];
+    for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+      const t = this.get(x, y);
+      if (t === TILE.WALK && hash(x, y) > 0.93) this.lampList.push({ x: (x + 0.5) * T, y: (y + 0.5) * T, r: 150, color: 'rgba(255,214,120,0.9)' });
+      if (t === TILE.TREE) this.treeList.push([x, y]);
+    }
+    this.chunks = new Map();
+  },
+
+  // The ground never changes, so it is drawn once into 8x8-tile pictures and reused.
+  chunk(cx, cy) {
+    const key = cx + ',' + cy;
+    let c = this.chunks.get(key);
+    if (c) {
+      this.chunks.delete(key); // move to the end: recently used
+      this.chunks.set(key, c);
+      return c;
+    }
+    const CH = 8, S = CH * T;
+    c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.translate(-cx * S, -cy * S);
+    this.staticPass = true;
+    for (let y = cy * CH; y < cy * CH + CH; y++) for (let x = cx * CH; x < cx * CH + CH; x++) if (x < MAP_W && y < MAP_H) this.drawTile(g, x, y, this.get(x, y), 0);
+    this.staticPass = false;
+    this.chunks.set(key, c);
+    if (this.chunks.size > 70) this.chunks.delete(this.chunks.keys().next().value);
+    return c;
+  },
+
+  // Small noise textures so grass and roads don't look flat
+  makePatterns() {
+    const make = (base, specks) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 96;
+      const g = c.getContext('2d');
+      g.fillStyle = base;
+      g.fillRect(0, 0, 96, 96);
+      const r = seeded(base.length * 31 + specks.length);
+      for (const [col, n, size] of specks) {
+        g.fillStyle = col;
+        for (let i = 0; i < n; i++) g.fillRect(Math.floor(r() * 96), Math.floor(r() * 96), size, size + (size > 1 ? 1 : 0));
+      }
+      return this.patternCtx.createPattern(c, 'repeat');
+    };
+    this.patternCtx = document.createElement('canvas').getContext('2d');
+    this.pat = {
+      grass: make('#78c165', [['#6cb35a', 260, 2], ['#8bd176', 220, 2], ['#5fa64f', 60, 1]]),
+      park: make('#8bd077', [['#7cc268', 240, 2], ['#9edb8a', 200, 2]]),
+      road: make('#3f444c', [['#4a5059', 300, 1], ['#353940', 260, 1], ['#555b64', 40, 2]]),
+      walk: make('#cbd0d5', [['#bfc4ca', 200, 1], ['#d6dade', 160, 1]]),
+      sand: make('#efd99a', [['#e4cb85', 260, 1], ['#f7e5b3', 200, 1]]),
+    };
   },
 
   makeBuildings(x0, y0, x1, y1, rnd) {
@@ -237,6 +294,7 @@ const City = {
       let speed = c.speed;
       const ahead = { x: c.x + Math.cos(c.a) * 70, y: c.y + Math.sin(c.a) * 70 };
       if (player && Math.hypot(player.x - ahead.x, player.y - ahead.y) < 50) speed = 0;
+      c.stopped = speed === 0;
       const d = speed * dt;
       if (c.horizontal) {
         c.x += Math.cos(c.a) * d;
@@ -281,10 +339,13 @@ const City = {
     const y0 = Math.max(0, Math.floor(cam.y / T) - 1);
     const x1 = Math.min(MAP_W - 1, Math.ceil((cam.x + cam.w) / T) + 1);
     const y1 = Math.min(MAP_H - 1, Math.ceil((cam.y + cam.h) / T) + 1);
-
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) this.drawTile(ctx, x, y, this.get(x, y), time);
+    const S = 8 * T;
+    for (let cy = Math.floor(y0 / 8); cy <= Math.floor(y1 / 8); cy++) {
+      for (let cx = Math.floor(x0 / 8); cx <= Math.floor(x1 / 8); cx++) ctx.drawImage(this.chunk(cx, cy), cx * S, cy * S, S + 1, S + 1);
     }
+    // moving water on top
+    if (FX.high) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (this.get(x, y) === TILE.WATER) this.drawWaterFx(ctx, x, y, time);
+    this.lamps = this.lampList.filter((L) => L.x > cam.x - 160 && L.x < cam.x + cam.w + 160 && L.y > cam.y - 160 && L.y < cam.y + cam.h + 160);
     // zones (glowing pads)
     for (const z of this.zones) {
       const pulse = 0.35 + 0.25 * Math.sin(time * 3);
@@ -302,16 +363,47 @@ const City = {
     }
     for (const d of this.decor) this.drawDecor(ctx, d, time);
     // trees on top of ground
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (this.get(x, y) === TILE.TREE) this.drawTree(ctx, x, y);
+    for (const [x, y] of this.treeList) if (x >= x0 && x <= x1 && y >= y0 && y <= y1) this.drawTree(ctx, x, y, cam);
   },
 
-  drawTop(ctx, cam, time) {
-    // buildings are drawn after vehicles so they feel tall
-    for (const b of this.buildings) {
+  heightOf(b) {
+    if (b.kind === 'stadium') return 70;
+    if (b.kind === 'dealer') return 95;
+    if (b.kind === 'upgrade') return 80;
+    return b.height * 12;
+  },
+
+  visibleBuildings(cam, margin) {
+    return this.buildings.filter((b) => {
       const bx = b.x * T, by = b.y * T, bw = b.w * T, bh = b.h * T;
-      if (bx > cam.x + cam.w + 50 || by > cam.y + cam.h + 50 || bx + bw < cam.x - 50 || by + bh < cam.y - 50) continue;
-      this.drawBuilding(ctx, b, time);
+      return !(bx > cam.x + cam.w + margin || by > cam.y + cam.h + margin || bx + bw < cam.x - margin || by + bh < cam.y - margin);
+    });
+  },
+
+  // Sun shadows on the ground (drawn before cars)
+  drawShadows(ctx, cam) {
+    const sun = (this.sunNow = FX.sun());
+    ctx.fillStyle = `rgba(10,20,40,${sun.alpha})`;
+    for (const b of this.visibleBuildings(cam, 400)) {
+      const hp = this.heightOf(b);
+      const x0 = b.x * T, y0 = b.y * T, x1 = x0 + b.w * T, y1 = y0 + b.h * T;
+      const sx = sun.x * hp, sy = sun.y * hp;
+      const pts = hull([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0 + sx, y0 + sy], [x1 + sx, y0 + sy], [x1 + sx, y1 + sy], [x0 + sx, y1 + sy]]);
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.fill();
     }
+  },
+
+  // Buildings rise up towards the camera, so the city looks 3D.
+  drawTop(ctx, cam, time) {
+    const cx = cam.x + cam.w / 2, cy = cam.y + cam.h / 2;
+    const night = FX.darkness() > 0.25;
+    const list = this.visibleBuildings(cam, 300);
+    const dist = (b) => Math.hypot(b.x * T + (b.w * T) / 2 - cx, b.y * T + (b.h * T) / 2 - cy);
+    list.sort((a, b) => dist(b) - dist(a));
+    for (const b of list) this.drawExtruded(ctx, b, cx, cy, time, night);
     // zone labels float above everything
     for (const z of this.zones) {
       const cx = z.x + z.w / 2;
@@ -326,12 +418,12 @@ const City = {
     switch (t) {
       case TILE.GRASS:
       case TILE.TREE:
-        ctx.fillStyle = h < 0.5 ? '#7cc46a' : '#77bf65';
+        ctx.fillStyle = this.pat.grass;
         ctx.fillRect(px, py, T, T);
         if (h > 0.85) { ctx.fillStyle = '#9bd88a'; ctx.fillRect(px + h * 30, py + 10, 4, 4); }
         break;
       case TILE.PARK:
-        ctx.fillStyle = h < 0.5 ? '#8fd27a' : '#88cc72';
+        ctx.fillStyle = this.pat.park;
         ctx.fillRect(px, py, T, T);
         if (h > 0.7) {
           const fc = ['#ff80ab', '#ffd54f', '#fff', '#ce93d8'][Math.floor(h * 40) % 4];
@@ -350,7 +442,7 @@ const City = {
         if (this.get(x, y + 1) === TILE.PATH) ctx.fillRect(px + 6, py + T - 8, T - 12, 8);
         break;
       case TILE.ROAD: {
-        ctx.fillStyle = '#41464e';
+        ctx.fillStyle = this.pat.road;
         ctx.fillRect(px, py, T, T);
         const hr = this.isHRoadRow(y), vr = this.isVRoadCol(x) && !(x >= 64 && x <= 66 && y >= 47 && y <= 63);
         ctx.fillStyle = '#f5f5f5';
@@ -367,7 +459,7 @@ const City = {
         break;
       }
       case TILE.WALK:
-        ctx.fillStyle = '#c9cdd2';
+        ctx.fillStyle = this.pat.walk;
         ctx.fillRect(px, py, T, T);
         ctx.strokeStyle = '#b3b8be';
         ctx.lineWidth = 1;
@@ -380,19 +472,13 @@ const City = {
         ctx.fillRect(px, py, T, T);
         break;
       case TILE.WATER: {
-        ctx.fillStyle = x >= SEA_X ? '#2f9be0' : '#4fb3e8';
+        const deep = x >= SEA_X ? Math.min(1, (x - SEA_X) / 10) : 0.2;
+        ctx.fillStyle = `rgb(${Math.round(60 - deep * 40)},${Math.round(170 - deep * 50)},${Math.round(230 - deep * 20)})`;
         ctx.fillRect(px, py, T, T);
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth = 2;
-        const o = Math.sin(time * 1.5 + x * 0.7 + y * 0.4) * 6;
-        ctx.beginPath();
-        ctx.moveTo(px + 8 + o, py + 16 + h * 16);
-        ctx.quadraticCurveTo(px + 16 + o, py + 10 + h * 16, px + 24 + o, py + 16 + h * 16);
-        ctx.stroke();
         break;
       }
       case TILE.SAND:
-        ctx.fillStyle = h < 0.5 ? '#f1dc9b' : '#eed594';
+        ctx.fillStyle = this.pat.sand;
         ctx.fillRect(px, py, T, T);
         if (h > 0.9) { // beach umbrella
           ctx.fillStyle = ['#ef5350', '#42a5f5', '#ffee58'][Math.floor(h * 100) % 3];
@@ -418,17 +504,46 @@ const City = {
     }
   },
 
-  drawTree(ctx, x, y) {
+  drawWaterFx(ctx, x, y, time) {
+    const px = x * T, py = y * T;
     const h = hash(x, y);
-    const cx = x * T + T / 2 + (h - 0.5) * 10;
-    const cy = y * T + T / 2 + (hash(y, x) - 0.5) * 10;
+    const tw = Math.sin(time * 2.3 + h * 40);
+    if (tw > 0.85) { ctx.fillStyle = `rgba(255,255,255,${(tw - 0.85) * 4})`; ctx.fillRect(px + h * 36 + 4, py + hash(y, x) * 36 + 4, 6, 2); }
+    // foam where water meets land
+    if (this.get(x - 1, y) === TILE.SAND || this.get(x - 1, y) === TILE.DOCK) {
+      ctx.fillStyle = `rgba(255,255,255,${0.45 + 0.2 * Math.sin(time * 2 + y)})`;
+      ctx.fillRect(px, py, 6 + 3 * Math.sin(time * 1.7 + y * 0.8), T);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    const o = Math.sin(time * 1.5 + x * 0.7 + y * 0.4) * 6;
+    ctx.beginPath();
+    ctx.moveTo(px + 8 + o, py + 16 + h * 16);
+    ctx.quadraticCurveTo(px + 16 + o, py + 10 + h * 16, px + 24 + o, py + 16 + h * 16);
+    ctx.stroke();
+  },
+
+  drawTree(ctx, x, y, cam) {
+    const h = hash(x, y);
+    const bx = x * T + T / 2 + (h - 0.5) * 10;
+    const by = y * T + T / 2 + (hash(y, x) - 0.5) * 10;
     const r = 18 + h * 8;
-    ctx.fillStyle = 'rgba(0,0,0,0.18)';
-    ctx.beginPath(); ctx.arc(cx + 6, cy + 6, r, 0, Math.PI * 2); ctx.fill();
+    const sun = this.sunNow || { x: 0.4, y: 0.3, alpha: 0.2 };
+    ctx.fillStyle = `rgba(0,0,0,${sun.alpha * 0.8})`;
+    ctx.beginPath(); ctx.arc(bx + sun.x * 40, by + sun.y * 40, r, 0, Math.PI * 2); ctx.fill();
+    // a little 3D: the canopy leans away from the camera like a real tall tree
+    const ccx = cam.x + cam.w / 2, ccy = cam.y + cam.h / 2;
+    const k = 0.05 + h * 0.03;
+    const cx = bx + (bx - ccx) * k, cy = by + (by - ccy) * k;
+    ctx.strokeStyle = '#6d4c41';
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(cx, cy); ctx.stroke();
     ctx.fillStyle = h < 0.5 ? '#2e7d32' : '#388e3c';
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = h < 0.5 ? '#43a047' : '#4caf50';
     ctx.beginPath(); ctx.arc(cx - r * 0.25, cy - r * 0.25, r * 0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.arc(cx - r * 0.4, cy - r * 0.4, r * 0.28, 0, Math.PI * 2); ctx.fill();
     if (h > 0.8) { // fruit tree, like the cherries in the drawing!
       ctx.fillStyle = '#e53935';
       for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(cx + Math.cos(i * 1.7) * r * 0.55, cy + Math.sin(i * 1.7) * r * 0.55, 3, 0, Math.PI * 2); ctx.fill(); }
@@ -487,15 +602,57 @@ const City = {
     }
   },
 
+  drawExtruded(ctx, b, cx, cy, time, night) {
+    const hp = this.heightOf(b);
+    const k = hp / 1100;
+    const x0 = b.x * T, y0 = b.y * T, x1 = x0 + b.w * T, y1 = y0 + b.h * T;
+    const R = (x, y) => [x + (x - cx) * k, y + (y - cy) * k];
+    const wallBase = b.kind === 'dealer' ? '#cfd8dc' : b.kind === 'upgrade' ? '#e64a19' : b.kind === 'stadium' ? '#78909c' : b.color;
+    const walls = [];
+    if (y0 > cy) walls.push([[x0, y0], [x1, y0], -0.42]); // north face
+    if (y1 < cy) walls.push([[x1, y1], [x0, y1], -0.05]); // south face
+    if (x0 > cx) walls.push([[x0, y1], [x0, y0], -0.25]); // west face
+    if (x1 < cx) walls.push([[x1, y0], [x1, y1], -0.18]); // east face
+    for (const [a, c, sh] of walls) {
+      const ra = R(a[0], a[1]), rc = R(c[0], c[1]);
+      ctx.fillStyle = shade(wallBase, sh);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(rc[0], rc[1]); ctx.lineTo(ra[0], ra[1]);
+      ctx.closePath();
+      ctx.fill();
+      if (!FX.high) continue;
+      // windows
+      const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+      const cols = Math.max(1, Math.floor(len / 34));
+      const rows = Math.max(1, Math.floor(hp / (b.kind === 'normal' ? 26 : 40)));
+      const P = (u, v) => [a[0] + (c[0] - a[0]) * u + (ra[0] + (rc[0] - ra[0]) * u - (a[0] + (c[0] - a[0]) * u)) * v, a[1] + (c[1] - a[1]) * u + (ra[1] + (rc[1] - ra[1]) * u - (a[1] + (c[1] - a[1]) * u)) * v];
+      const glass = b.kind === 'dealer' ? 'rgba(129,212,250,0.9)' : 'rgba(40,70,100,0.55)';
+      for (let r = 0; r < rows; r++) {
+        for (let q = 0; q < cols; q++) {
+          const lit = night && hash(b.x * 31 + q, b.y * 17 + r + Math.floor(sh * 10)) > 0.45;
+          ctx.fillStyle = lit ? '#ffe28a' : glass;
+          const u0 = (q + 0.22) / cols, u1 = (q + 0.78) / cols, v0 = (r + 0.25) / rows, v1 = (r + 0.75) / rows;
+          const p1 = P(u0, v0), p2 = P(u1, v0), p3 = P(u1, v1), p4 = P(u0, v1);
+          ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.lineTo(p3[0], p3[1]); ctx.lineTo(p4[0], p4[1]); ctx.fill();
+        }
+      }
+    }
+    // roof, scaled up as if it is closer to the camera
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1 + k, 1 + k);
+    ctx.translate(-cx, -cy);
+    this.drawBuilding(ctx, b, time);
+    if (night && b.kind === 'normal' && hash(b.x, b.y) > 0.6) {
+      // red aircraft light on tall roofs
+      ctx.fillStyle = Math.sin(time * 3 + b.x) > 0 ? '#ff1744' : '#5d0010';
+      ctx.beginPath(); ctx.arc(x0 + 12, y0 + 12, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  },
+
   drawBuilding(ctx, b, time) {
     const x = b.x * T, y = b.y * T, w = b.w * T, h = b.h * T;
-    const lift = b.height || 10;
-    // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.22)';
-    ctx.fillRect(x + lift, y + lift, w, h);
-    // walls (a hint of the side)
-    ctx.fillStyle = shade(b.color, -0.25);
-    ctx.fillRect(x, y + 6, w, h);
 
     if (b.kind === 'dealer') {
       ctx.fillStyle = '#eceff1';
@@ -626,14 +783,17 @@ function label(ctx, text, x, y, color) {
 function drawVehicle(ctx, v, x, y, a, color, extra) {
   if (v.type === 'bike') return drawBikeShape(ctx, x, y, a, color);
   if (v.type === 'boat') return drawBoatShape(ctx, x, y, a, color, extra && extra.speed);
-  return drawCarShape(ctx, x, y, a, color, v.size[0], v.size[1], v.price > 200000);
+  return drawCarShape(ctx, x, y, a, color, v.size[0], v.size[1], v.price > 200000, extra && extra.brake);
 }
 
-function drawCarShape(ctx, x, y, a, color, L = 40, W = 20, sporty = false) {
+function drawCarShape(ctx, x, y, a, color, L = 40, W = 20, sporty = false, brake = false) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(a);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  // soft shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.16)';
+  roundRect(ctx, -L / 2 + 1, -W / 2 + 2, L + 6, W + 6, 8); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
   roundRect(ctx, -L / 2 + 3, -W / 2 + 4, L, W, 6); ctx.fill();
   // wheels
   ctx.fillStyle = '#111';
@@ -641,23 +801,50 @@ function drawCarShape(ctx, x, y, a, color, L = 40, W = 20, sporty = false) {
   ctx.fillRect(L / 2 - 14, -W / 2 - 2, 9, 4);
   ctx.fillRect(-L / 2 + 5, W / 2 - 2, 9, 4);
   ctx.fillRect(L / 2 - 14, W / 2 - 2, 9, 4);
-  // body
-  ctx.fillStyle = color;
+  // body with shiny paint
+  const g = ctx.createLinearGradient(0, -W / 2, 0, W / 2);
+  g.addColorStop(0, shade(color, -0.35));
+  g.addColorStop(0.22, shade(color, 0.1));
+  g.addColorStop(0.5, shade(color, 0.32));
+  g.addColorStop(0.78, color);
+  g.addColorStop(1, shade(color, -0.4));
+  ctx.fillStyle = g;
   roundRect(ctx, -L / 2, -W / 2, L, W, sporty ? 9 : 5); ctx.fill();
-  ctx.fillStyle = shade(color, -0.25);
-  ctx.fillRect(-L / 2 + 2, -1, L - 4, 2);
-  // windows
-  ctx.fillStyle = '#1c2a38';
-  roundRect(ctx, sporty ? -4 : -8, -W / 2 + 3, sporty ? 14 : 20, W - 6, 3); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fillRect(sporty ? 6 : 8, -W / 2 + 4, 3, W - 8);
+  // bonnet line + bumper
+  ctx.strokeStyle = shade(color, -0.3);
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(L / 2 - 10, -W / 2 + 3); ctx.quadraticCurveTo(L / 2 - 6, 0, L / 2 - 10, W / 2 - 3); ctx.stroke();
+  // glass cabin
+  const gx = sporty ? -6 : -10, gw = sporty ? 16 : 22;
+  const gl = ctx.createLinearGradient(gx, 0, gx + gw, 0);
+  gl.addColorStop(0, '#0f1a26');
+  gl.addColorStop(0.7, '#2c4a66');
+  gl.addColorStop(1, '#6f9ac0');
+  ctx.fillStyle = gl;
+  roundRect(ctx, gx, -W / 2 + 3, gw, W - 6, 3); ctx.fill();
+  // roof
+  ctx.fillStyle = shade(color, 0.05);
+  roundRect(ctx, gx + 4, -W / 2 + 5, gw - 9, W - 10, 2); ctx.fill();
+  // sun glint
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillRect(gx + gw - 4, -W / 2 + 4, 2, W - 8);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(-L / 2 + 4, -W / 2 + 2, L - 10, 2);
+  // mirrors
+  ctx.fillStyle = shade(color, -0.2);
+  ctx.fillRect(gx + gw - 2, -W / 2 - 2, 3, 2);
+  ctx.fillRect(gx + gw - 2, W / 2, 3, 2);
   // lights
-  ctx.fillStyle = '#fff9c4';
+  ctx.fillStyle = '#fffde7';
   ctx.fillRect(L / 2 - 3, -W / 2 + 2, 3, 4);
   ctx.fillRect(L / 2 - 3, W / 2 - 6, 3, 4);
-  ctx.fillStyle = '#e53935';
-  ctx.fillRect(-L / 2, -W / 2 + 2, 2, 4);
-  ctx.fillRect(-L / 2, W / 2 - 6, 2, 4);
+  ctx.fillStyle = brake ? '#ff1744' : '#b71c1c';
+  ctx.fillRect(-L / 2, -W / 2 + 2, 2, 5);
+  ctx.fillRect(-L / 2, W / 2 - 7, 2, 5);
+  if (brake) {
+    ctx.fillStyle = 'rgba(255,23,68,0.35)';
+    ctx.beginPath(); ctx.arc(-L / 2, -W / 2 + 4, 6, 0, Math.PI * 2); ctx.arc(-L / 2, W / 2 - 4, 6, 0, Math.PI * 2); ctx.fill();
+  }
   ctx.restore();
 }
 

@@ -1,4 +1,4 @@
-// Main game: driving, racing, shops, saving, sound and the HUD.
+// Racing City: driving, walking, racing, missions, shops, saving, sound and the HUD.
 
 const SAVE_KEY = 'mehek-city-racer-v1';
 const UPGRADES = [
@@ -24,6 +24,10 @@ const Game = {
   cam: { x: 0, y: 0, w: 0, h: 0 },
   currentZone: null,
   muted: false,
+  onFoot: false,
+  userZoom: 1,
+  menuKind: null,
+  lastDt: 0.016,
 
   // ------------------------------------------------------------ setup
   init() {
@@ -33,11 +37,16 @@ const Game = {
     this.resize();
     City.build();
     TRACKS.forEach(buildTrack);
+    FX.init();
+    People.init();
+    Missions.init();
     Input.init();
     this.load();
+    FX.high = this.save.gfx !== 'low';
     this.placeAtSpawn();
     this.bindButtons();
     Sound.init();
+    MP.init();
     this.updateHud();
     let last = performance.now();
     const loop = (now) => {
@@ -48,6 +57,7 @@ const Game = {
     };
     requestAnimationFrame(loop);
     if (!this.save.seenHelp) this.showHelp();
+    if (!this.save.tutorialDone) Tutorial.start();
   },
 
   resize() {
@@ -64,6 +74,17 @@ const Game = {
     document.getElementById('btn-help').onclick = () => this.showHelp();
     document.getElementById('btn-sound').onclick = () => this.toggleSound();
     document.getElementById('btn-pad').onclick = () => document.body.classList.toggle('show-touch');
+    document.getElementById('btn-settings').onclick = () => this.openSettings();
+    document.getElementById('online').onclick = () => this.openPlayers();
+    document.getElementById('rotate-ok').onclick = () => document.body.classList.add('allow-portrait');
+    const full = document.getElementById('btn-full');
+    if (!document.fullscreenEnabled) full.hidden = true;
+    full.onclick = () => {
+      if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen()
+        .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape'))
+        .catch(() => {});
+    };
     if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) document.body.classList.add('show-touch');
   },
 
@@ -77,6 +98,9 @@ const Game = {
       best: {},
       races: 0,
       seenHelp: false,
+      stars: [],
+      tutorialDone: false,
+      look: { shirt: '#ab47bc', hair: '#4e342e', skin: '#f1c27d', pants: '#263238' },
     };
   },
   newOwned(v) {
@@ -91,6 +115,8 @@ const Game = {
     }
     if (!this.save.owned || !this.save.owned.length) this.save = this.newSave();
     if (this.save.current >= this.save.owned.length) this.save.current = 0;
+    if (!this.save.look) this.save.look = { shirt: '#ab47bc', hair: '#4e342e', skin: '#f1c27d', pants: '#263238' };
+    if (!this.save.stars) this.save.stars = [];
   },
   store() {
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.save)); } catch (e) { /* private mode: no saving */ }
@@ -101,6 +127,8 @@ const Game = {
   doReset() {
     this.save = this.newSave();
     this.save.seenHelp = true;
+    Missions.stop();
+    this.onFoot = false;
     this.store();
     this.mode = 'city';
     this.placeAtSpawn();
@@ -135,25 +163,35 @@ const Game = {
     const v = this.ownedVehicle();
     const s = v.type === 'boat' ? City.boatSpawn : City.spawn;
     this.makeCar(s.x, s.y, s.a);
+    this.onFoot = false;
     this.snapCamera();
   },
 
   // ------------------------------------------------------------ main loop
   frame(dt) {
     this.time += dt;
+    this.lastDt = dt;
     Input.update();
     if (Input.take('mute')) this.toggleSound();
+    this.userZoom = Math.max(0.4, Math.min(2.6, this.userZoom * Input.takeZoom()));
+    FX.update(dt);
+    MP.tick(performance.now());
+    if (Math.floor(this.time) !== this.lastClock) {
+      this.lastClock = Math.floor(this.time);
+      document.getElementById('clock').textContent = FX.clockText();
+    }
 
     if (this.menuOpen) {
       if (Input.take('back')) this.closeMenu();
       Input.take('action');
       Input.take('garage');
+      Input.take('exit');
       if (this.car) { this.car.vx *= 0.9; this.car.vy *= 0.9; }
     } else if (this.mode === 'city') this.updateCity(dt);
     else if (this.mode === 'dealer') this.updateDealer(dt);
     else if (this.mode === 'race') this.updateRace(dt);
 
-    Sound.engine(this.mode === 'dealer' || !this.car ? 0 : Math.abs(this.car.speed) / (this.car.st.top || 1), this.mode !== 'dealer' && !this.menuOpen);
+    Sound.engine(this.mode === 'dealer' || !this.car ? 0 : Math.abs(this.car.speed) / (this.car.st.top || 1), this.mode !== 'dealer' && !this.menuOpen && !this.onFoot);
     this.draw();
   },
 
@@ -227,12 +265,29 @@ const Game = {
       car.skid.push({ x: car.x - Math.cos(car.a) * 14, y: car.y - Math.sin(car.a) * 14, a: car.a, t: this.time });
       if (car.skid.length > 160) car.skid.shift();
     }
+    this.driveFx(car, surface);
+  },
+
+  // smoke, dust, splashes and nitro flames
+  driveFx(car, surface) {
+    const sp = Math.abs(car.speed);
+    const L = car.v.size[0] / 2;
+    const bx = car.x - Math.cos(car.a) * L, by = car.y - Math.sin(car.a) * L;
+    if (car.v.type === 'boat') {
+      if (sp > 40 && Math.random() < 0.7) FX.splash(bx, by, 1);
+    } else {
+      if (car.drifting && Math.random() < 0.8) FX.smoke(bx, by, 1);
+      if (surface < 0.9 && sp > 80 && Math.random() < 0.5) FX.smoke(bx, by, 1, 'rgba(170,140,95,');
+      if (sp < 20 && Math.random() < 0.03) FX.smoke(bx, by, 1, 'rgba(140,140,140,');
+    }
+    if (car.usingNitro) { FX.flame(bx, by, car.a); FX.flame(bx, by, car.a); }
   },
 
   bump(car) {
     if (Math.hypot(car.vx, car.vy) > 120 && this.time - (car.lastBump || 0) > 0.3) {
       car.lastBump = this.time;
       this.shake = 8;
+      FX.sparks(car.x + Math.cos(car.a) * 18, car.y + Math.sin(car.a) * 18, 12);
       Sound.thud();
     }
   },
@@ -249,31 +304,56 @@ const Game = {
   // ------------------------------------------------------------ city
   updateCity(dt) {
     const car = this.car;
-    this.drive(dt, car, (x, y) => this.citySurface(x, y), (x, y) => City.solidFor(x, y, car.v.type));
-    City.updateTraffic(dt, car);
-    // bump into traffic
-    for (const t of City.traffic) {
-      const dx = car.x - t.x, dy = car.y - t.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 30 && d > 0.01) {
-        car.x += (dx / d) * (30 - d);
-        car.y += (dy / d) * (30 - d);
-        car.vx *= 0.6; car.vy *= 0.6;
-        this.bump(car);
+    const w = People.walker;
+    if (Input.take('exit')) this.toggleFoot();
+    if (this.onFoot) {
+      People.updateWalker(dt, (x, y) => City.solidFor(x, y, 'walk'));
+      car.vx = car.vy = car.speed = 0;
+    } else {
+      this.drive(dt, car, (x, y) => this.citySurface(x, y), (x, y) => City.solidFor(x, y, car.v.type));
+    }
+    const me = this.onFoot ? w : car;
+    City.updateTraffic(dt, me);
+    const threats = City.traffic.map((t) => ({ x: t.x, y: t.y, vx: Math.cos(t.a) * t.speed, vy: Math.sin(t.a) * t.speed }));
+    if (!this.onFoot) threats.push(car);
+    People.update(dt, threats);
+
+    // bump into traffic and other players
+    const others = MP.cityPlayers(0).map((o) => o.s);
+    if (!this.onFoot) {
+      for (const t of City.traffic.concat(others)) {
+        const dx = car.x - t.x, dy = car.y - t.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 30 && d > 0.01) {
+          car.x += (dx / d) * (30 - d);
+          car.y += (dy / d) * (30 - d);
+          car.vx *= 0.6; car.vy *= 0.6;
+          this.bump(car);
+        }
       }
     }
+    Missions.update(dt);
+    Tutorial.update();
 
-    // which zone are we in?
+    // who or what is nearby?
+    const giver = GIVERS.find((g) => Math.hypot(g.x - me.x, g.y - me.y) < (this.onFoot ? 60 : 95));
     this.currentZone = null;
     for (const z of City.zones) {
-      if (car.x > z.x && car.x < z.x + z.w && car.y > z.y && car.y < z.y + z.h) this.currentZone = z;
+      if (me.x > z.x && me.x < z.x + z.w && me.y > z.y && me.y < z.y + z.h) this.currentZone = z;
     }
-    if (this.currentZone) {
+    const nearCar = this.onFoot && Math.hypot(w.x - car.x, w.y - car.y) < 80;
+    if (giver) {
+      this.prompt(`${giver.name}: Talk`);
+      if (Input.take('action')) this.talkTo(giver);
+    } else if (this.currentZone) {
       const z = this.currentZone;
       let hint = z.hint;
-      if (z.id === 'dealer' && car.v.type === 'boat') hint = 'Park your boat at the Marina first';
+      if (z.id === 'dealer' && car.v.type === 'boat' && !this.onFoot) hint = 'Park your boat at the Marina first';
       this.prompt(`${z.name}: ${hint}`);
       if (Input.take('action')) this.useZone(z);
+    } else if (nearCar) {
+      this.prompt('Get in your ' + car.v.name + ': press <span class="key">F</span> / 🚗 IN');
+      if (Input.take('action')) this.toggleFoot();
     } else {
       this.prompt(null);
       Input.take('action');
@@ -283,15 +363,69 @@ const Game = {
     this.followCamera(dt);
   },
 
+  // Get out of the car, or back in
+  toggleFoot() {
+    if (this.mode !== 'city') return;
+    const car = this.car, w = People.walker;
+    if (!this.onFoot) {
+      if (Math.abs(car.speed) > 70) return this.toast('Slow down first to get out!');
+      const spot = this.findWalkSpot(car);
+      if (!spot) return this.toast(car.v.type === 'boat' ? 'Drive next to the pier or beach to get out.' : 'No room to get out here!');
+      w.x = spot.x; w.y = spot.y; w.dir = car.a + Math.PI / 2;
+      car.vx = car.vy = 0;
+      this.onFoot = true;
+      Sound.click();
+    } else {
+      if (Math.hypot(w.x - car.x, w.y - car.y) > 80) return this.toast(`Walk to your ${car.v.name} to get in (follow the yellow ring).`);
+      this.onFoot = false;
+      Sound.click();
+    }
+    this.updateHud();
+  },
+
+  findWalkSpot(car) {
+    for (const r of [32, 48, 64, 84]) {
+      for (const off of [Math.PI / 2, -Math.PI / 2, Math.PI, 0, Math.PI / 4, -Math.PI / 4, Math.PI * 0.75, -Math.PI * 0.75]) {
+        const x = car.x + Math.cos(car.a + off) * r, y = car.y + Math.sin(car.a + off) * r;
+        if (!City.solidFor(x, y, 'walk')) return { x, y };
+      }
+    }
+    return null;
+  },
+
+  talkTo(g) {
+    Sound.click();
+    Tutorial.talked = true;
+    const busy = Missions.active;
+    const m = this.openMenu(`
+      <div class="talk"><canvas id="portrait" width="96" height="96"></canvas>
+        <div><h2>${g.name}</h2><p>“${g.line}”</p></div></div>
+      ${busy ? `<p>You are already on a mission: <b>${busy.title}</b>.</p><button class="big danger" id="t-cancel">Cancel that mission</button>` : ''}
+      ${g.type === 'stars' ? `<p>You have found <b>${Missions.starsFound()}/25</b> stars.</p><button class="big" id="t-hint">Show star hints on the minimap</button>` : busy ? '' : '<button class="big" id="t-yes">Accept mission</button>'}
+      <button class="big alt" data-close>Not now</button>`);
+    const pc = m.querySelector('#portrait').getContext('2d');
+    pc.translate(48, 52);
+    pc.scale(3.2, 3.2);
+    drawPerson(pc, 0, 0, -Math.PI / 2, 0, g.look);
+    const yes = m.querySelector('#t-yes');
+    if (yes) yes.onclick = () => { if (Missions.start(g)) this.closeMenu(); };
+    const cancel = m.querySelector('#t-cancel');
+    if (cancel) cancel.onclick = () => { Missions.stop(); this.talkTo(g); };
+    const hint = m.querySelector('#t-hint');
+    if (hint) hint.onclick = () => { this.showStarHint = true; this.closeMenu(); this.toast('Faint stars on the minimap show where gold stars are hidden ⭐'); };
+  },
+
   useZone(z) {
     Sound.click();
+    if (z.id === 'race' && this.onFoot) return this.toast('Get in your car first!');
     if (z.id === 'dealer') {
-      if (this.car.v.type === 'boat') return this.toast('Boats can\'t go in the shop!');
+      if (this.car.v.type === 'boat' && !this.onFoot) return this.toast('Boats can\'t go in the shop!');
+      this.onFoot = false;
       this.mode = 'dealer';
       Dealer.enter();
       this.prompt(null);
     } else if (z.id === 'upgrade') this.openUpgrades();
-    else if (z.id === 'race') this.openRaceMenu();
+    else if (z.id === 'race') { Tutorial.sawRaces = true; this.openRaceMenu(); }
     else if (z.id === 'marina') this.openGarage(true);
   },
 
@@ -323,7 +457,7 @@ const Game = {
   },
 
   // ------------------------------------------------------------ racing
-  startRace(track) {
+  startRace(track, opts = {}) {
     const v = this.ownedVehicle();
     if (track.vehicle === 'boat' && v.type !== 'boat') return this.toast('You need a boat for this race! Buy one in the Car Shop.');
     if (track.vehicle === 'land' && v.type === 'boat') return this.toast('Boats can\'t drive on roads! Pick a car or bike.');
@@ -342,7 +476,9 @@ const Game = {
     if (track.vehicle !== 'boat') sorted.splice(2, 0, near('bike')[0]);
     const ais = [];
     const names = ['Rayhan', 'Mehek', 'Zara', 'Leo', 'Aria', 'Max', 'Sam', 'Nova'];
-    for (let k = 0; k < track.aiCount; k++) {
+    // online races are just you and your friends
+    const myGrid = opts.mp ? Math.max(0, MP.lobbyPeers().slice().sort((p, q) => (p.peer < q.peer ? -1 : 1)).findIndex((p) => p.sameTab)) : 0;
+    for (let k = 0; k < (opts.mp ? 0 : track.aiCount); k++) {
       const p = grid(k + 1);
       const v = sorted[k % sorted.length];
       const near = nearestOnPath(track, p.x, p.y);
@@ -354,9 +490,10 @@ const Game = {
         speed: 0, lap: 0, done: false, finishTime: 0,
       });
     }
-    const p0 = grid(0);
+    const p0 = grid(myGrid);
     this.makeCar(p0.x, p0.y, a);
-    this.race = { track, ais, count: 3.5, t: 0, lap: 0, idx: track.N - 3, maxIdx: 0, progress: -3, done: false, finishOrder: [] };
+    this.onFoot = false;
+    this.race = { track, ais, count: 3.5, t: 0, lap: 0, idx: track.N - 3, maxIdx: 0, progress: -3, done: false, finishOrder: [], mp: !!opts.mp, go: opts.go || null };
     this.race.idx = nearestOnPath(track, p0.x, p0.y).i;
     this.race.progress = this.race.idx - track.N;
     this.mode = 'race';
@@ -442,11 +579,26 @@ const Game = {
         this.bump(car);
       }
     }
+    for (const { s: o } of MP.racers(0)) {
+      const dx = car.x - o.x, dy = car.y - o.y, d = Math.hypot(dx, dy);
+      if (d < 32 && d > 0.01) { car.x += (dx / d) * (32 - d); car.y += (dy / d) * (32 - d); car.vx *= 0.85; car.vy *= 0.85; this.bump(car); }
+    }
     this.followCamera(dt);
+  },
+
+  racerCount() {
+    const r = this.race;
+    return r.mp ? MP.racers(0).length + 1 : r.track.aiCount + 1;
   },
 
   racePosition() {
     const r = this.race;
+    if (r.mp) {
+      if (r.done) return r.place;
+      let pos = 1;
+      for (const { p } of MP.racers(0)) if (p.presence.ft || (p.presence.prog || -1e9) > r.progress) pos++;
+      return pos;
+    }
     if (r.done) return r.finishOrder.indexOf('you') + 1;
     let pos = 1 + r.finishOrder.length;
     for (const ai of r.ais) if (!ai.done && ai.s > r.progress) pos++;
@@ -458,7 +610,9 @@ const Game = {
     r.finishOrder.push(who);
     if (who !== 'you') return;
     r.done = true;
-    const place = r.finishOrder.length;
+    let place = r.finishOrder.length;
+    if (r.mp) place = 1 + MP.racers(0).filter(({ p }) => p.presence.ft).length;
+    r.place = place;
     const prize = r.track.rewards[place - 1] || 0;
     this.save.money += prize;
     this.save.races = (this.save.races || 0) + 1;
@@ -466,17 +620,18 @@ const Game = {
     if (!prev || place < prev) this.save.best[r.track.id] = place;
     this.store();
     this.updateHud();
-    if (place === 1) Sound.win(); else Sound.coin();
+    if (place === 1) { Sound.win(); FX.confetti(this.car.x, this.car.y, 120); } else Sound.coin();
     setTimeout(() => this.showResults(place, prize), 900);
   },
 
   leaveRace() {
+    if (this.race && this.race.mp) MP.leaveLobby();
     this.race = null;
     this.mode = 'city';
     const z = City.zones.find((q) => q.id === 'race');
     const v = this.ownedVehicle();
     if (v.type === 'boat') this.placeAtSpawn();
-    else { this.makeCar(z.x + z.w / 2, z.y + z.h / 2 - 60, -Math.PI / 2); this.snapCamera(); }
+    else { this.makeCar(z.x + z.w / 2, z.y + z.h / 2 - 60, -Math.PI / 2); this.onFoot = false; this.snapCamera(); }
     this.closeMenu();
     this.updateHud();
   },
@@ -487,14 +642,15 @@ const Game = {
     this.camY = this.car.y;
   },
   followCamera(dt) {
-    const car = this.car;
+    const w = People.walker;
+    const car = this.onFoot ? { x: w.x, y: w.y, vx: 0, vy: 0, speed: 0 } : this.car;
     const lead = 0.35;
     const tx = car.x + car.vx * lead, ty = car.y + car.vy * lead;
     const k = Math.min(1, dt * 5);
     this.camX += (tx - this.camX) * k;
     this.camY += (ty - this.camY) * k;
     const speedFrac = Math.min(1, Math.abs(car.speed) / 600);
-    const targetZoom = this.baseZoom * (1 - speedFrac * 0.22);
+    const targetZoom = this.baseZoom * this.userZoom * (1 - speedFrac * 0.22) * (this.onFoot ? 1.25 : 1);
     this.zoom += (targetZoom - this.zoom) * Math.min(1, dt * 2);
   },
 
@@ -523,18 +679,53 @@ const Game = {
     this.cam.y = this.camY - this.cam.h / 2 + shy;
     ctx.setTransform(z, 0, 0, z, -this.cam.x * z, -this.cam.y * z);
 
+    const cam = this.cam, time = this.time, dt = this.lastDt;
+    const lights = [];
+    const headlights = (x, y, a, L) => lights.push({ x: x + Math.cos(a) * L / 2, y: y + Math.sin(a) * L / 2, r: 280, cone: a, color: 'rgba(255,250,210,0.8)' });
+    let dark = 0;
     if (this.mode === 'city') {
-      City.draw(ctx, this.cam, this.time);
+      dark = FX.darkness();
+      City.draw(ctx, cam, time);
+      City.drawShadows(ctx, cam);
       this.drawSkids(ctx);
+      Missions.draw(ctx, cam, time);
+      People.draw(ctx, cam, time);
       for (const t of City.traffic) {
-        if (t.x < this.cam.x - 60 || t.x > this.cam.x + this.cam.w + 60 || t.y < this.cam.y - 60 || t.y > this.cam.y + this.cam.h + 60) continue;
-        if (t.type === 'bus') drawCarShape(ctx, t.x, t.y, t.a, '#ffb300', 70, 24);
-        else drawCarShape(ctx, t.x, t.y, t.a, t.color, 38, 19);
+        if (t.x < cam.x - 60 || t.x > cam.x + cam.w + 60 || t.y < cam.y - 60 || t.y > cam.y + cam.h + 60) continue;
+        const stopped = t.speed === 0 || t.stopped;
+        if (t.type === 'bus') drawCarShape(ctx, t.x, t.y, t.a, '#ffb300', 70, 24, false, stopped);
+        else drawCarShape(ctx, t.x, t.y, t.a, t.color, 38, 19, false, stopped);
+        if (dark > 0.05) headlights(t.x, t.y, t.a, t.type === 'bus' ? 70 : 38);
       }
-      this.drawPlayer(ctx);
-      City.drawTop(ctx, this.cam, this.time);
+      const players = MP.cityPlayers(dt);
+      MP.drawPlayers(ctx, players, time);
+      for (const { p, s: o } of players) if (dark > 0.05 && !p.presence.f) headlights(o.x, o.y, o.a, 40);
+      if (this.onFoot) {
+        const c = this.car, w = People.walker;
+        drawVehicle(ctx, c.v, c.x, c.y, c.a, c.color, { speed: 0 });
+        ctx.strokeStyle = `rgba(255,235,59,${0.5 + 0.3 * Math.sin(time * 4)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.v.size[0] * 0.8, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,235,59,0.7)';
+        ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.stroke();
+        drawPerson(ctx, w.x, w.y, w.dir, w.step, this.save.look);
+        if (MP.myEmoteUntil > time && MP.emote) { ctx.font = '30px system-ui'; ctx.textAlign = 'center'; ctx.fillText(MP.emote, w.x, w.y - 30); }
+        lights.push({ x: w.x, y: w.y, r: 110 });
+      } else {
+        this.drawPlayer(ctx);
+        if (dark > 0.05) headlights(this.car.x, this.car.y, this.car.a, this.car.v.size[0]);
+        if (MP.myEmoteUntil > time && MP.emote) { ctx.font = '30px system-ui'; ctx.textAlign = 'center'; ctx.fillText(MP.emote, this.car.x, this.car.y - 36); }
+      }
+      FX.draw(ctx, cam);
+      const tt = Tutorial.target();
+      if (tt) beam(ctx, tt.x, tt.y, tt.r, time, '');
+      City.drawTop(ctx, cam, time);
+      FX.drawClouds(ctx, cam);
+      if (dark > 0.05) for (const L of City.lamps) lights.push(L);
     } else if (this.mode === 'race') {
-      drawTrack(ctx, this.race.track, this.cam, this.time);
+      const tr = this.race.track;
+      dark = tr.theme === 'night' ? 0.5 : 0;
+      drawTrack(ctx, tr, cam, time);
       this.drawSkids(ctx);
       for (const ai of this.race.ais) {
         drawVehicle(ctx, ai.v, ai.x, ai.y, ai.a, ai.color, { speed: ai.speed });
@@ -545,9 +736,17 @@ const Game = {
         ctx.lineWidth = 3;
         ctx.strokeText(ai.name, ai.x, ai.y - 24);
         ctx.fillText(ai.name, ai.x, ai.y - 24);
+        if (dark) headlights(ai.x, ai.y, ai.a, ai.v.size[0]);
       }
+      const racers = MP.racers(dt);
+      MP.drawPlayers(ctx, racers, time);
+      for (const { s: o } of racers) if (dark) headlights(o.x, o.y, o.a, 40);
       this.drawPlayer(ctx);
+      if (dark) headlights(this.car.x, this.car.y, this.car.a, this.car.v.size[0]);
+      FX.draw(ctx, cam);
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    FX.drawLighting(ctx, W, H, cam, z, lights, dark);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.drawOverlay(ctx, W, H);
@@ -581,14 +780,19 @@ const Game = {
     ctx.strokeStyle = 'rgba(255,235,59,0.55)';
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(c.x, c.y, c.v.size[0] * 0.75, 0, Math.PI * 2); ctx.stroke();
-    drawVehicle(ctx, c.v, c.x, c.y, c.a, c.color, { speed: Math.abs(c.speed) });
+    drawVehicle(ctx, c.v, c.x, c.y, c.a, c.color, { speed: Math.abs(c.speed), brake: Input.state.brake > 0 && c.speed > 5 });
   },
 
   drawOverlay(ctx, W, H) {
     const d = this.dpr;
     const car = this.car;
+    const me = this.onFoot ? People.walker : car;
+    // arrow at the screen edge pointing to the mission / tutorial target
+    const target = this.mode === 'city' ? (Missions.active ? Missions.active.targets[Missions.active.step] : Tutorial.target()) : null;
+    if (target) this.drawArrow(ctx, W, H, target, me);
     // speedometer
     const touch = document.body.classList.contains('show-touch');
+    if (!this.onFoot) {
     const r = (touch ? 46 : 62) * d;
     // with the touch controller showing, the speedometer moves to the top left
     const cx = touch ? r + 12 * d : W / 2, cy = touch ? 64 * d + r + 8 * d : H - r - 18 * d;
@@ -609,9 +813,10 @@ const Game = {
     ctx.fillRect(cx - 40 * d, cy + r - 16 * d, 80 * d, 6 * d);
     ctx.fillStyle = '#29b6f6';
     ctx.fillRect(cx - 40 * d, cy + r - 16 * d, 80 * d * (car.nitro / car.st.nitroTank), 6 * d);
+    }
 
     if (this.mode === 'city' && City.minimap) {
-      const mw = Math.min(200, window.innerWidth * 0.3) * d, mh = mw * (MAP_H / MAP_W);
+      const mw = Math.min(200, window.innerWidth * 0.3, window.innerHeight * 0.4) * d, mh = mw * (MAP_H / MAP_W);
       const mx = W - mw - 12 * d, my = 64 * d;
       ctx.globalAlpha = 0.92;
       ctx.drawImage(City.minimap, mx, my, mw, mh);
@@ -619,7 +824,14 @@ const Game = {
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 2 * d;
       ctx.strokeRect(mx, my, mw, mh);
-      const px = mx + (car.x / (MAP_W * T)) * mw, py = my + (car.y / (MAP_H * T)) * mh;
+      const mp = (x, y) => [mx + (x / (MAP_W * T)) * mw, my + (y / (MAP_H * T)) * mh];
+      const dot = (x, y, r, col) => { const [a, b] = mp(x, y); ctx.fillStyle = col; ctx.beginPath(); ctx.arc(a, b, r * d, 0, Math.PI * 2); ctx.fill(); };
+      if (this.showStarHint) Missions.stars.forEach((st, i) => { if (!this.save.stars.includes(i)) dot(st.x, st.y, 2, 'rgba(255,215,0,0.75)'); });
+      for (const g of GIVERS) dot(g.x, g.y, 2.5, '#ffd600');
+      for (const { s: o } of MP.cityPlayers(0)) dot(o.x, o.y, 3.5, '#00e5ff');
+      if (this.onFoot) dot(car.x, car.y, 2.5, '#fff');
+      if (target) dot(target.x, target.y, 4 + Math.sin(this.time * 6), '#00e5ff');
+      const px = mx + (me.x / (MAP_W * T)) * mw, py = my + (me.y / (MAP_H * T)) * mh;
       ctx.fillStyle = '#ffeb3b';
       ctx.beginPath(); ctx.arc(px, py, 4 * d, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5 * d; ctx.stroke();
@@ -641,7 +853,7 @@ const Game = {
       ctx.fillText(`${tr.name} (${tr.level})`, W - 198 * d, 86 * d);
       ctx.fillStyle = '#fff';
       ctx.font = `bold ${30 * d}px system-ui`;
-      ctx.fillText(`${this.racePosition()}/${tr.aiCount + 1}`, W - 198 * d, 124 * d);
+      ctx.fillText(`${this.racePosition()}/${this.racerCount()}`, W - 198 * d, 124 * d);
       ctx.font = `${15 * d}px system-ui`;
       ctx.fillText(`Lap ${Math.min(tr.laps, Math.max(1, r2.lap + 1))}/${tr.laps}`, W - 100 * d, 112 * d);
       ctx.fillText(formatTime(r2.t), W - 100 * d, 132 * d);
@@ -665,12 +877,42 @@ const Game = {
     }
   },
 
+  drawArrow(ctx, W, H, t, me) {
+    const d = this.dpr;
+    const z = this.zoom * d;
+    const sx = (t.x - this.cam.x) * z, sy = (t.y - this.cam.y) * z;
+    const margin = 70 * d;
+    if (sx > margin && sx < W - margin && sy > margin && sy < H - margin) return;
+    const cx = W / 2, cy = H / 2;
+    const a = Math.atan2(sy - cy, sx - cx);
+    const k = Math.min((W / 2 - margin) / Math.abs(Math.cos(a) || 1e-6), (H / 2 - margin) / Math.abs(Math.sin(a) || 1e-6));
+    const ax = cx + Math.cos(a) * k, ay = cy + Math.sin(a) * k;
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(a);
+    ctx.fillStyle = '#00e5ff';
+    ctx.strokeStyle = '#003845';
+    ctx.lineWidth = 3 * d;
+    ctx.beginPath(); ctx.moveTo(26 * d, 0); ctx.lineTo(-12 * d, -18 * d); ctx.lineTo(-4 * d, 0); ctx.lineTo(-12 * d, 18 * d); ctx.closePath();
+    ctx.stroke(); ctx.fill();
+    ctx.restore();
+    ctx.font = `bold ${13 * d}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 3 * d;
+    const txt = `${Math.round(Math.hypot(t.x - me.x, t.y - me.y) / T * 2)} m`;
+    ctx.strokeText(txt, ax - Math.cos(a) * 34 * d, ay - Math.sin(a) * 34 * d + 4 * d);
+    ctx.fillText(txt, ax - Math.cos(a) * 34 * d, ay - Math.sin(a) * 34 * d + 4 * d);
+  },
+
   // ------------------------------------------------------------ HUD + messages
   updateHud() {
     document.getElementById('money').textContent = money(this.save.money);
     const v = this.ownedVehicle();
     const icon = v.type === 'bike' ? '🏍️' : v.type === 'boat' ? '🚤' : '🚗';
-    document.getElementById('vehicle').textContent = `${icon} ${v.name}`;
+    document.getElementById('vehicle').textContent = this.onFoot ? `🚶 On foot (${v.name} parked)` : `${icon} ${v.name}`;
+    document.body.classList.toggle('on-foot', this.onFoot);
   },
   prompt(text) {
     const el = document.getElementById('prompt');
@@ -694,7 +936,8 @@ const Game = {
   },
 
   // ------------------------------------------------------------ menus
-  openMenu(html, wide) {
+  openMenu(html, wide, kind = null) {
+    this.menuKind = kind;
     const m = document.getElementById('menu');
     m.innerHTML = `<div class="panel ${wide ? 'wide' : ''}"><button class="close" data-close>✕</button>${html}</div>`;
     m.classList.add('show');
@@ -718,30 +961,35 @@ const Game = {
   },
 
   showHelp() {
-    const m = this.openMenu(`
-      <h2>🏙️ Mehek City Racer</h2>
-      <p>Drive around the city, race to earn money, and collect the <b>Top 100</b> cars, bikes and boats!</p>
+    this.openMenu(`
+      <h2>🏙️ Racing City</h2>
+      <p>Drive around the city, do missions, race to earn money, and collect the <b>Top 100</b> cars, bikes and boats. Play online with your friends!</p>
       <div class="help-grid">
         <div><h3>⌨️ Keyboard</h3>
-          <p><span class="key">W A S D</span> or <span class="key">Arrows</span> drive<br>
-          <span class="key">Shift</span> nitro · <span class="key">Space</span> handbrake / drift<br>
-          <span class="key">E</span> use / enter · <span class="key">G</span> garage<br>
-          <span class="key">Esc</span> pause / close · <span class="key">M</span> sound</p></div>
+          <p><span class="key">W A S D</span> / <span class="key">Arrows</span> drive or walk<br>
+          <span class="key">Shift</span> nitro / run · <span class="key">Space</span> drift<br>
+          <span class="key">F</span> get out / get in · <span class="key">E</span> talk / use<br>
+          <span class="key">+</span> <span class="key">−</span> or mouse wheel: zoom<br>
+          <span class="key">G</span> garage · <span class="key">Esc</span> pause · <span class="key">M</span> sound</p></div>
         <div><h3>🎮 Controller</h3>
-          <p>Left stick steer · <b>RT</b> gas · <b>LT</b> brake<br>
-          <b>B</b>/<b>RB</b> nitro · <b>X</b> handbrake<br>
-          <b>A</b> use / enter · <b>Y</b> garage · <b>Start</b> pause</p></div>
-        <div><h3>📱 Touch</h3>
-          <p>Use the on-screen buttons. Tap 🕹️ at the top to show or hide them.</p></div>
+          <p>Left stick steer / walk · <b>RT</b> gas · <b>LT</b> brake<br>
+          <b>B</b>/<b>RB</b> nitro · <b>X</b> drift · <b>LB</b> get out / in<br>
+          <b>A</b> talk / use · <b>Y</b> garage · <b>Start</b> pause<br>
+          Right stick up / down: zoom</p></div>
+        <div><h3>📱 Phone</h3>
+          <p>Turn your phone sideways. Joystick to steer or walk, <b>GAS</b> and <b>BRAKE</b> on the right, <b>🚶 OUT</b> to get out. Pinch or 🔍 to zoom. Tilt steering is in ⚙️ Settings.</p></div>
       </div>
       <h3>Where to go</h3>
       <ul>
-        <li>🟡 <b>Car Shop</b> (Mehek Motors) – buy, sell and trade vehicles</li>
-        <li>🟠 <b>Upgrade Shop</b> – engine, turbo, tires, nitro and paint</li>
-        <li>🔴 <b>Racing Area</b> – Easy, Medium, Hard, Extreme and Impossible tracks</li>
-        <li>🔵 <b>Marina</b> – take your boat out on the sea</li>
+        <li>🟡 <b>Car Shop</b> (Mehek Motors): buy, sell and trade vehicles</li>
+        <li>🟠 <b>Upgrade Shop</b>: engine, turbo, tires, nitro and paint</li>
+        <li>🔴 <b>Racing Area</b>: Easy to Impossible tracks, and online races with friends</li>
+        <li>🔵 <b>Marina</b>: take your boat out on the sea</li>
+        <li>❗ <b>People with a yellow !</b> give you missions. ⭐ Find all 25 gold stars!</li>
       </ul>
-      <button class="big" data-close>Let's drive! 🚗</button>`);
+      <button class="big" data-close>Let's drive! 🚗</button>
+      <button class="big alt" id="help-tut">Play the tutorial</button>`);
+    document.getElementById('help-tut').onclick = () => { this.closeMenu(); Tutorial.start(); };
     this.save.seenHelp = true;
     this.store();
   },
@@ -752,11 +1000,97 @@ const Game = {
       <h2>⏸️ Paused</h2>
       <button class="big" data-close>Keep playing</button>
       ${inRace ? '<button class="big alt" id="quit-race">Quit race</button>' : ''}
+      ${Missions.active ? '<button class="big alt" id="quit-mission">Cancel mission</button>' : ''}
+      <button class="big alt" id="pause-settings">⚙️ Settings</button>
       <button class="big alt" id="pause-help">Controls & help</button>
       <button class="big danger" id="pause-reset">Start a new game</button>`);
     if (inRace) m.querySelector('#quit-race').onclick = () => this.leaveRace();
+    if (Missions.active) m.querySelector('#quit-mission').onclick = () => { Missions.stop(); this.closeMenu(); };
+    m.querySelector('#pause-settings').onclick = () => this.openSettings();
     m.querySelector('#pause-help').onclick = () => this.showHelp();
     m.querySelector('#pause-reset').onclick = () => this.resetSave();
+  },
+
+  openSettings() {
+    const look = this.save.look;
+    const swatches = (key, list) => list.map((c) => `<button class="paint ${look[key] === c ? 'on' : ''}" style="background:${c}" data-look="${key}" data-c="${c}" aria-label="${key} colour"></button>`).join('');
+    const m = this.openMenu(`
+      <h2>⚙️ Settings</h2>
+      <h3>Graphics</h3>
+      <div class="tabs"><button class="tab ${FX.high ? 'on' : ''}" data-gfx="high">✨ High</button><button class="tab ${FX.high ? '' : 'on'}" data-gfx="low">⚡ Fast (older phones)</button></div>
+      <h3>Phone steering</h3>
+      <div class="tabs"><button class="tab ${Input.tilt.on ? '' : 'on'}" data-tilt="0">🕹️ Joystick</button><button class="tab ${Input.tilt.on ? 'on' : ''}" data-tilt="1">📱 Tilt the phone</button></div>
+      <h3>Your character</h3>
+      <div class="look"><canvas id="me-look" width="96" height="96"></canvas><div>
+        <p>Shirt</p><div class="paints">${swatches('shirt', SHIRTS)}</div>
+        <p>Hair</p><div class="paints">${swatches('hair', HAIRS)}</div>
+        <p>Skin</p><div class="paints">${swatches('skin', SKINS)}</div>
+      </div></div>
+      <h3>Online name</h3>
+      <div class="namerow"><input id="set-name" maxlength="16" value="${MP.clean(MP.name)}" aria-label="Online name"><button class="buy" id="set-name-save">Save</button></div>
+      <button class="big alt" id="set-tut">Play the tutorial again</button>
+      <button class="big" data-close>Done</button>`, false, 'settings');
+    const pc = m.querySelector('#me-look').getContext('2d');
+    pc.translate(48, 52); pc.scale(3.2, 3.2);
+    drawPerson(pc, 0, 0, -Math.PI / 2, 0, look);
+    m.querySelectorAll('[data-gfx]').forEach((b) => (b.onclick = () => { FX.high = b.dataset.gfx === 'high'; this.save.gfx = b.dataset.gfx; this.store(); this.openSettings(); }));
+    m.querySelectorAll('[data-tilt]').forEach((b) => (b.onclick = async () => {
+      const ok = await Input.enableTilt(b.dataset.tilt === '1');
+      if (b.dataset.tilt === '1') {
+        if (!ok) this.toast('Tilt steering isn\'t allowed here. Use the joystick instead.');
+        else setTimeout(() => { if (!Input.tilt.seen) this.toast('This device isn\'t sending tilt data. Use the joystick instead.'); }, 2000);
+      }
+      this.openSettings();
+    }));
+    m.querySelectorAll('[data-look]').forEach((b) => (b.onclick = () => { look[b.dataset.look] = b.dataset.c; this.store(); this.openSettings(); }));
+    m.querySelector('#set-name-save').onclick = () => { MP.saveProfile(m.querySelector('#set-name').value); this.toast(`Your name is now ${MP.name}`); };
+    m.querySelector('#set-tut').onclick = () => { this.closeMenu(); Tutorial.start(); };
+  },
+
+  openPlayers() {
+    const list = MP.peers.filter((p) => p.kind === 'viewer');
+    const rows = list.map((p) => {
+      const pr = p.presence || {};
+      const where = pr.md === 'r' ? '🏁 racing' : pr.md === 'd' ? '🛒 in the Car Shop' : pr.f ? '🚶 walking' : '🚗 driving';
+      const v = VEHICLES[pr.v];
+      return `<li><i style="background:${MP.safeColor(pr.c)}"></i><b>${MP.clean(pr.n || 'Racer')}${p.sameTab ? ' (you)' : ''}</b><span>${where}${v && !pr.f ? ' · ' + v.name : ''}</span></li>`;
+    }).join('');
+    const m = this.openMenu(`
+      <h2>👥 Online players</h2>
+      ${MP.available ? `<p>Everyone who opens this game's link right now plays in the same city. Share the link to play with friends!</p>
+        <ul class="players">${rows || '<li>Just you for now.</li>'}</ul>
+        <h3>Send an emoji</h3>
+        <div class="emotes">${EMOTES.map((e) => `<button data-emote="${e}">${e}</button>`).join('')}</div>
+        <div class="namerow"><input id="mp-name" maxlength="16" value="${MP.clean(MP.name)}" aria-label="Your online name"><button class="buy" id="mp-name-save">Save name</button></div>`
+      : '<p>Multiplayer works when you play from the shared Racing City link on claude.ai. Here you are playing solo.</p>'}
+      <button class="big" data-close>Back to the game</button>`, false, 'players');
+    m.querySelectorAll('[data-emote]').forEach((b) => (b.onclick = () => { MP.sendEmote(b.dataset.emote); this.closeMenu(); }));
+    const save = m.querySelector('#mp-name-save');
+    if (save) save.onclick = () => { MP.saveProfile(m.querySelector('#mp-name').value); this.toast(`Your name is now ${MP.name}`); this.openPlayers(); };
+  },
+
+  openLobby() {
+    const l = MP.lobby;
+    if (!l) return;
+    const peers = MP.lobbyPeers();
+    const leader = MP.lobbyLeader();
+    const rows = peers.map((p) => {
+      const pr = p.presence || {};
+      const v = VEHICLES[pr.v];
+      return `<li><i style="background:${MP.safeColor(pr.c)}"></i><b>${MP.clean(pr.n || 'Racer')}${p.sameTab ? ' (you)' : ''}${leader && p.peer === leader.peer ? ' 👑' : ''}</b><span>${pr.ready ? '✅ ready' : '⏳ not ready'}${v ? ' · ' + v.name : ''}</span></li>`;
+    }).join('');
+    const m = this.openMenu(`
+      <h2>👥 Online race: ${l.track.name}</h2>
+      <p>${l.track.level} · ${l.track.laps} laps. Friends who join this lobby race together. The 👑 host starts the race.</p>
+      <ul class="players">${rows}</ul>
+      <button class="big ${l.ready ? 'alt' : ''}" id="lob-ready">${l.ready ? 'Not ready' : "I'm ready!"}</button>
+      ${MP.iAmLeader() ? '<button class="big" id="lob-start">🏁 Start the race for everyone</button>' : '<p>Waiting for the host to start…</p>'}
+      <button class="big danger" id="lob-leave">Leave lobby</button>`, false, 'lobby');
+    m.querySelector('#lob-ready').onclick = () => { l.ready = !l.ready; MP.lastSend = 0; this.openLobby(); };
+    const st = m.querySelector('#lob-start');
+    if (st) st.onclick = () => MP.startForAll();
+    m.querySelector('#lob-leave').onclick = () => { MP.leaveLobby(); this.closeMenu(); };
+    m.querySelector('[data-close]').onclick = () => { MP.leaveLobby(); this.closeMenu(); };
   },
 
   vehicleCard(v, button, extra = '') {
@@ -926,6 +1260,7 @@ const Game = {
   },
 
   switchVehicle(i) {
+    this.onFoot = false;
     const prevType = this.ownedVehicle().type;
     this.save.current = i;
     this.store();
@@ -1012,10 +1347,12 @@ const Game = {
             <div>${t.laps} laps · ${t.aiCount} rivals · rivals go ~${kmh(t.aiTop)} km/h</div>
             <div>1st ${money(t.rewards[0])} · 2nd ${money(t.rewards[1])} · 3rd ${money(t.rewards[2])}</div>
           </div>
-          <button class="buy" data-race="${i}" ${ok ? '' : 'disabled'}>${ok ? 'Race!' : t.vehicle === 'boat' ? 'Needs boat' : 'Needs car/bike'}</button>
+          <div class="rbtns"><button class="buy" data-race="${i}" ${ok ? '' : 'disabled'}>${ok ? 'Race!' : t.vehicle === 'boat' ? 'Needs boat' : 'Needs car/bike'}</button>
+          <button class="buy online" data-online="${i}" ${ok ? '' : 'disabled'}>👥 Online</button></div>
         </div>`;
       }).join('')}</div>`, true);
     m.querySelectorAll('[data-race]').forEach((b) => (b.onclick = () => this.startRace(TRACKS[+b.dataset.race])));
+    m.querySelectorAll('[data-online]').forEach((b) => (b.onclick = () => MP.joinLobby(TRACKS[+b.dataset.online])));
     m.querySelectorAll('canvas[data-track]').forEach((c) => {
       const t = TRACKS[+c.dataset.track];
       const g = c.getContext('2d');
@@ -1036,9 +1373,14 @@ const Game = {
 
   showResults(place, prize) {
     const r = this.race;
-    const names = r.finishOrder.map((w) => (w === 'you' ? 'You' : w.name));
+    let names = r.finishOrder.map((w) => (w === 'you' ? 'You' : w.name));
+    if (r.mp) {
+      const fin = MP.racers(0).filter(({ p }) => p.presence.ft).map(({ p }) => ({ n: MP.clean(p.presence.n), t: p.presence.ft }));
+      fin.push({ n: 'You', t: r.t });
+      names = fin.sort((a, b) => a.t - b.t).map((f) => f.n);
+    }
     // anyone still racing goes after
-    const rest = r.ais.filter((a) => !a.done).sort((p, q) => q.s - p.s).map((a) => a.name);
+    const rest = r.mp ? MP.racers(0).filter(({ p }) => !p.presence.ft).map(({ p }) => MP.clean(p.presence.n) + ' (still racing)') : r.ais.filter((a) => !a.done).sort((p, q) => q.s - p.s).map((a) => a.name);
     const all = names.concat(rest);
     const medal = place === 1 ? '🏆' : place === 2 ? '🥈' : place === 3 ? '🥉' : '🏁';
     const m = this.openMenu(`
@@ -1046,9 +1388,17 @@ const Game = {
       <p>Time: <b>${formatTime(r.t)}</b> · Prize: <b class="green">${money(prize)}</b></p>
       <ol class="results">${all.map((n) => `<li class="${n === 'You' ? 'me' : ''}">${n}</li>`).join('')}</ol>
       ${place === 1 && r.track.id === 'impossible' ? '<p class="green"><b>WOW! You beat the IMPOSSIBLE track! 🤯</b></p>' : ''}
-      <button class="big" id="again">Race again</button>
+      <button class="big" id="again">${r.mp ? 'Back to the lobby' : 'Race again'}</button>
       <button class="big alt" id="back">Back to the city</button>`);
-    m.querySelector('#again').onclick = () => this.startRace(r.track);
+    m.querySelector('#again').onclick = () => {
+      if (!r.mp) return this.startRace(r.track);
+      const lobby = MP.lobby;
+      this.race = { mp: false };
+      MP.lobby = null; // keep the lobby open while we leave the race
+      this.leaveRace();
+      MP.lobby = lobby;
+      if (lobby) { lobby.ready = false; this.openLobby(); }
+    };
     m.querySelector('#back').onclick = () => this.leaveRace();
     m.querySelector('[data-close]').onclick = () => this.leaveRace();
   },
